@@ -68,17 +68,17 @@ The default wave delay is 150 seconds. `--test-directory` requires `--test-run`.
 
 ## Validation and Linux distribution status
 
-On the Windows development workstation, the operator reported **166 passing tests** with `python -m pytest tests/` (Python 3.12.14) and a successful full GUI `--test-run`. This is a Windows baseline, not evidence of Linux compatibility or of every failure scenario. Run ID, source commit and redacted end-to-end evidence have not yet been recorded. See [testing and acceptance](docs/nanopore/TESTING.md) and the [evidence ledger](docs/nanopore/EVIDENCE_AND_OPEN_ITEMS.md).
+On the Windows development workstation, the operator reported **166 passing tests** with `python -m pytest tests/` (Python 3.12.14) and a successful full GUI `--test-run`. This is a Windows baseline, not evidence of Linux compatibility or of every failure scenario. Run ID, source commit and redacted end-to-end evidence have not yet been recorded. See [testing and acceptance](docs/TESTING.md) and the [evidence ledger](docs/EVIDENCE_AND_OPEN_ITEMS.md).
 
-Linux workstations are the intended distribution target. **No Linux installer or automatic update functionality is implemented or verified yet.** Before distribution, validate the GUI and tests on a representative Linux workstation, then build and test a Linux-native package. The [draft Linux packaging and deferred-update plan](docs/nanopore/LINUX_PACKAGING_AND_UPDATES.md) proposes a Linux-built, one-directory PyInstaller pilot and prefers centrally managed updates where workstation policy permits. Update checks can remain offline until distribution is ready. Do not assume a Windows build can be distributed to Linux.
+Linux workstations are the intended distribution target. **No Linux installer or automatic update functionality is implemented or verified yet.** Before distribution, validate the GUI and tests on a representative Linux workstation, then build and test a Linux-native package. The [draft Linux packaging and deferred-update plan](docs/LINUX_PACKAGING_AND_UPDATES.md) proposes a Linux-built, one-directory PyInstaller pilot and prefers centrally managed updates where workstation policy permits. Update checks can remain offline until distribution is ready. Do not assume a Windows build can be distributed to Linux.
 
 ## Documentation
 
-- [PorePort Nanopore documentation index](docs/nanopore/README.md)
-- [Desktop user guide](docs/nanopore/USER_GUIDE.md)
-- [Testing and acceptance](docs/nanopore/TESTING.md)
-- [Linux packaging and deferred updates](docs/nanopore/LINUX_PACKAGING_AND_UPDATES.md)
-- [Operator tools](docs/nanopore/OPERATOR_TOOLS.md)
+- [PorePort Nanopore documentation index](docs/README.md)
+- [Desktop user guide](docs/USER_GUIDE.md)
+- [Testing and acceptance](docs/TESTING.md)
+- [Linux packaging and deferred updates](docs/LINUX_PACKAGING_AND_UPDATES.md)
+- [Operator tools](docs/OPERATOR_TOOLS.md)
 
 ## Packaging and API notes
 
