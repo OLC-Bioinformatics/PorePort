@@ -1,0 +1,10 @@
+# Pinned workstation/development environment. Install the project itself too.
+-e .
+PySide6==6.11.2
+azure-core==1.41.0
+azure-storage-blob==12.30.2
+matplotlib==3.11.2
+pytest==9.1.1
+reportlab==5.0.1
+requests==2.34.2
+urllib3==2.7.0

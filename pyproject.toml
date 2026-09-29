@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nanopore-cloud-gui"
+dynamic = ["version"]
+description = "Operator GUI for FoodPort Nanopore cloud uploads and reports"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.7,<7",
+    "requests>=2.32,<3",
+    "urllib3>=2,<3",
+    "matplotlib>=3.8,<4",
+    "reportlab>=4,<6",
+]
+
+[project.optional-dependencies]
+cloud-test = ["azure-storage-blob>=12,<13"]
+test = ["pytest>=8,<10"]
+
+[project.scripts]
+nanopore-cloud-gui = "nanopore_gui.main:run"
+
+[tool.setuptools.dynamic]
+version = {attr = "nanopore_gui.version.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["nanopore_gui*"]
+
+[tool.setuptools.package-data]
+nanopore_gui = ["assets/*.png", "assets/*.jpg", "assets/*.jpeg"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
