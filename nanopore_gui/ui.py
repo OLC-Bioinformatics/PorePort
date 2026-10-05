@@ -313,6 +313,8 @@ class MainWindow(QMainWindow):
         self.watcher.directoryChanged.connect(self._tick)
         self.api_pool = QThreadPool(self)
         self._status_in_flight = False
+        self._status_unavailable = False
+        self._select_run_task = None
         self._result_in_flight = False
         self._iteration_result_tasks = {}
         self._target_report_task = None
@@ -344,7 +346,9 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(560, 420)
         self._live_pixmap = QPixmap()
         self._auto_size_live_result = True
-        screen = QApplication.primaryScreen()
+        # Use the monitor under the pointer at launch, not the primary monitor.
+        # A terminal does not expose a reliable "launch monitor" to Qt.
+        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
         available = screen.availableGeometry() if screen else None
         preferred_width = 1280
         if self.view_run_id is not None:
@@ -368,6 +372,13 @@ class MainWindow(QMainWindow):
         else:
             preferred_height = 720
         self.resize(preferred_width, preferred_height)
+        if available:
+            # Put the window center one-third across the usable screen.
+            # Clamp its top-left corner so the window remains visible.
+            x = available.x() + round(available.width() / 3 - preferred_width / 2)
+            x = max(available.x(), min(x, available.right() - preferred_width + 1))
+            y = available.y() + max(0, (available.height() - preferred_height) // 2)
+            self.move(x, y)
         self._build()
         if test_mode:
             self._apply_test_preset(test_directory)
@@ -430,6 +441,15 @@ class MainWindow(QMainWindow):
         self.about_button.clicked.connect(self._show_about)
         self.diagnostics_button = QPushButton("Export diagnostics")
         self.diagnostics_button.clicked.connect(self._export_diagnostics)
+        self.new_run_button = QPushButton("Start new run")
+        self.new_run_button.clicked.connect(self._start_new_run)
+        self.select_run_button = QPushButton("Select saved run")
+        self.select_run_button.clicked.connect(self._select_saved_run)
+        top_actions.addWidget(self.new_run_button)
+        top_actions.addWidget(self.select_run_button)
+        self.auto_restore_button = QPushButton("Do not reopen run")
+        self.auto_restore_button.clicked.connect(self._disable_auto_restore)
+        top_actions.addWidget(self.auto_restore_button)
         top_actions.addWidget(self.help_button)
         top_actions.addWidget(self.about_button)
         top_actions.addWidget(self.diagnostics_button)
@@ -1092,6 +1112,9 @@ class MainWindow(QMainWindow):
         self.create_button.setEnabled(bool(active and not self.run_id))
         self.finalize_button.setEnabled(bool(self.run_id))
         self.retry_button.setEnabled(bool(self.run_id))
+        self.new_run_button.setEnabled(bool(active and not self.headless_test))
+        self.select_run_button.setEnabled(bool(active and not self.headless_test))
+        self.auto_restore_button.setEnabled(bool(active and self.run_id and not self.headless_test))
 
     def _start_pairing(self):
         logger.info("gui_pairing_start")
@@ -1291,6 +1314,7 @@ class MainWindow(QMainWindow):
             self.create_button.setEnabled(True)
             self._show_error(str(exc))
             return
+        self._status_unavailable = False
         self.run_started = datetime.now(timezone.utc)
         lab_index = self.report_lab.findData(self.lab_name.currentText())
         if lab_index >= 0:
@@ -1318,6 +1342,7 @@ class MainWindow(QMainWindow):
         )
         self.run_box.setEnabled(False)
         self.run_section.setVisible(False)
+        self.auto_restore_button.setEnabled(not self.headless_test)
         self.status_section.set_expanded(True)
         self.results_section.set_expanded(True)
         self.finalize_button.setEnabled(not self.test_mode)
@@ -1467,20 +1492,27 @@ class MainWindow(QMainWindow):
         if self.run_started:
             elapsed = datetime.now(timezone.utc) - self.run_started
             self.run_age.setText(str(elapsed).split(".")[0])
-        if not self._status_in_flight:
+        if not self._status_in_flight and not self._status_unavailable:
             self._status_in_flight = True
-            task = _StatusTask(self.client, self.run_id)
-            task.succeeded.connect(self._status_succeeded)
-            task.failed.connect(self._status_failed)
+            polled_id = self.run_id
+            task = _StatusTask(self.client, polled_id)
+            task.succeeded.connect(
+                lambda result, rid=polled_id: self._status_succeeded(result)
+                if self.run_id == rid else None)
+            task.failed.connect(
+                lambda error, rid=polled_id: self._status_failed(error)
+                if self.run_id == rid else None)
             self.api_pool.start(task)
 
     def _status_succeeded(self, status):
         self._status_in_flight = False
         if self.run_id:
+            self._status_unavailable = False
             self._last_status = status
             self.network.setText("Connected")
             workflow_state = status.get("workflow_state", "unknown")
-            self.store.update_run_status(self.run_id, workflow_state)
+            if self.view_run_id is None and self.store.run(self.run_id)["active"]:
+                self.store.update_run_status(self.run_id, workflow_state)
             if workflow_state in ("stopping", "complete", "error"):
                 self._accepting_files = False
                 self.finalize_button.setEnabled(False)
@@ -1534,6 +1566,20 @@ class MainWindow(QMainWindow):
     def _status_failed(self, error):
         self._status_in_flight = False
         if self.run_id and isinstance(error, FoodPortError):
+            if error.status in (403, 404):
+                self._status_unavailable = True
+                self._accepting_files = False
+                self._stop_file_intake()
+                self.finalize_button.setEnabled(False)
+                self.retry_button.setEnabled(False)
+                self.pause_button.setEnabled(False)
+                self.status_label.setText(
+                    "Run {0} is unavailable to this account or no longer exists. "
+                    "Select saved run or Start new run; no remote run was changed."
+                    .format(self.run_id))
+                logger.warning("gui_run_unavailable run_id=%s status=%s",
+                               self.run_id, error.status)
+                return
             self.network.setText("Offline")
             self.status_label.setText(f"FoodPort unavailable: {error.detail}")
             logger.warning("gui_status_poll_failed run_id=%s error=%s", self.run_id, error)
@@ -1701,6 +1747,207 @@ class MainWindow(QMainWindow):
             self.uploader.submit(row["relative_path"], Path(row["local_path"]), row["size_bytes"])
         self.status_label.setText(f"Retrying {len(failed)} failed upload(s).")
         logger.info("gui_retry_failed_uploads run_id=%s count=%s", self.run_id, len(failed))
+
+    def _leave_run(self):
+        """Detach locally, without finalizing or deleting the remote run."""
+        if self._create_task or self._finalize_task or self._target_report_task or self._iteration_result_tasks or self._result_in_flight:
+            self._show_error("A run operation is in progress. Try again after it finishes.")
+            return False
+        if self._cloud_seed_task or self.test_controller:
+            self._show_error("A test wave is running. Stop the test before switching runs.")
+            return False
+        if self.uploader and not self.uploader.is_idle:
+            self._show_error("Uploads are in progress. Pause intake and wait for them to finish before switching.")
+            return False
+        old_id = self.run_id
+        self._accepting_files = False
+        self._stop_file_intake()
+        if self.uploader:
+            self.uploader.close(wait=True)
+            self.uploader = None
+        if old_id is not None and self.view_run_id is None:
+            self.store.close_run(old_id)
+        self.run_id = None
+        self.view_run_id = None
+        self.run_started = None
+        self._status_unavailable = False
+        self._status_in_flight = False
+        self._result_in_flight = False
+        self._last_status = None
+        self._last_state_marker = None
+        self._report_documents.clear()
+        self._report_artifacts.clear()
+        self._report_pages.clear()
+        self._iteration_result_tasks.clear()
+        self._target_report_task = None
+        self._last_uploaded = 0
+        self._last_measurement = time.monotonic()
+        self._last_new_file_at = None
+        self.failed_files.clear()
+        self._refresh_live_iterations()
+        self._render_report_documents()
+        self.run_details.setText("No active run.")
+        self.run_box.setEnabled(True)
+        self.auto_restore_button.setEnabled(False)
+        self.run_section.setVisible(True)
+        self.run_section.set_expanded(True)
+        self.create_button.setEnabled(True)
+        self.finalize_button.setEnabled(False)
+        self.retry_button.setEnabled(False)
+        self.pause_button.setEnabled(False)
+        self.pause_button.setText("Pause file intake")
+        self.status_label.setText("No run selected. Set up a new run or select a saved run.")
+        logger.info("gui_run_detached run_id=%s", old_id)
+        return True
+
+    def _start_new_run(self):
+        if self.run_id is not None:
+            answer = QMessageBox.question(
+                self, "Start new run",
+                "Leave run {0} locally? This does not finalize or cancel it on FoodPort. "
+                "Its saved files and reports remain available on this computer."
+                .format(self.run_id),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        if self._leave_run():
+            self.run_name.setText(datetime.now().strftime("%y%m%d-nanopore"))
+
+    def _disable_auto_restore(self):
+        if self.run_id is None:
+            return
+        run_id = self.run_id
+        answer = QMessageBox.question(
+            self, "Do not reopen run",
+            "Stop automatically reopening run {0} on this computer? "
+            "This only changes local startup selection; it does not cancel, "
+            "finalize, or delete the FoodPort run or local history."
+            .format(run_id),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.store.close_run(run_id)
+        self.auto_restore_button.setEnabled(False)
+        self.status_label.setText(
+            "Run {0} will not reopen automatically. Use Select saved run "
+            "to view it later, or Start new run.".format(run_id)
+        )
+        logger.info("gui_run_auto_restore_disabled run_id=%s", run_id)
+
+    def _select_saved_run(self):
+        if self._select_run_task is not None:
+            return
+        saved = self.store.list_runs()
+        if not saved:
+            QMessageBox.information(self, "Saved runs", "No runs are saved on this computer.")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select a locally saved run")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(
+            "These are local records, not all FoodPort runs. Checked means do not "
+            "reopen automatically. Changes affect only this computer; opening a "
+            "run checks FoodPort access first."))
+        table = QTableWidget(len(saved), 5, dialog)
+        table.setHorizontalHeaderLabels(
+            ["Do not reopen", "ID", "Name", "Last known state", "Started"])
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        for row, record in enumerate(saved):
+            check = QTableWidgetItem()
+            check.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+            check.setCheckState(Qt.CheckState.Unchecked if record["active"]
+                                else Qt.CheckState.Checked)
+            table.setItem(row, 0, check)
+            for col, value in enumerate((record["run_id"], record["run_name"],
+                                         record["workflow_state"] or "unknown",
+                                         record["started_at"]), start=1):
+                table.setItem(row, col, QTableWidgetItem(str(value)))
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table.selectRow(0)
+        layout.addWidget(table)
+        buttons = QHBoxLayout()
+        check_all = QPushButton("Check all")
+        clear_all = QPushButton("Uncheck all")
+        apply_button = QPushButton("Apply changes")
+        open_button = QPushButton("Open selected")
+        cancel_button = QPushButton("Close")
+
+        def set_all(state):
+            for row in range(table.rowCount()):
+                table.item(row, 0).setCheckState(state)
+
+        def apply_changes():
+            changes = {}
+            for row, record in enumerate(saved):
+                active = table.item(row, 0).checkState() != Qt.CheckState.Checked
+                if active != bool(record["active"]):
+                    changes[int(record["run_id"])] = active
+            if not changes:
+                return True
+            # Do not detach a currently uploading run through a checkbox.
+            if (self.run_id in changes and not changes[self.run_id]
+                    and self.uploader and not self.uploader.is_idle):
+                QMessageBox.warning(dialog, "Uploads in progress",
+                                    "Pause intake and finish uploads before changing "
+                                    "the current run's auto-reopen setting.")
+                return False
+            try:
+                self.store.set_runs_active(changes)
+            except Exception as exc:
+                logger.exception("gui_saved_run_bulk_update_failed")
+                QMessageBox.warning(dialog, "Could not save changes", str(exc))
+                return False
+            saved[:] = self.store.list_runs()
+            if self.run_id in changes:
+                self.auto_restore_button.setEnabled(bool(changes[self.run_id]))
+            QMessageBox.information(dialog, "Saved", "Local auto-reopen settings saved. "
+                                    "Only the newest eligible run opens automatically.")
+            return True
+
+        def open_selected():
+            if not apply_changes():
+                return
+            if table.currentRow() >= 0:
+                dialog.accept()
+
+        check_all.clicked.connect(lambda: set_all(Qt.CheckState.Checked))
+        clear_all.clicked.connect(lambda: set_all(Qt.CheckState.Unchecked))
+        apply_button.clicked.connect(apply_changes)
+        open_button.clicked.connect(open_selected)
+        cancel_button.clicked.connect(dialog.reject)
+        for button in (check_all, clear_all, apply_button, open_button, cancel_button):
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+        dialog.resize(940, 440)
+        if dialog.exec() != QDialog.DialogCode.Accepted or table.currentRow() < 0:
+            return
+        chosen = int(saved[table.currentRow()]["run_id"])
+        if chosen == self.run_id:
+            return
+        self._select_run_task = _StatusTask(self.client, chosen)
+        self._select_run_task.succeeded.connect(
+            lambda status, rid=chosen: self._selected_run_checked(rid, status))
+        self._select_run_task.failed.connect(self._selected_run_failed)
+        self.api_pool.start(self._select_run_task)
+        self.status_label.setText("Checking FoodPort access to run {0}...".format(chosen))
+
+    def _selected_run_failed(self, error):
+        self._select_run_task = None
+        self._show_error("Cannot open saved run: {0}".format(error))
+
+    def _selected_run_checked(self, run_id, status):
+        self._select_run_task = None
+        if not self._leave_run():
+            return
+        self.view_run_id = run_id
+        self._restore_run()
+        if self.run_id == run_id:
+            self._status_succeeded(status)
 
     def _logout(self):
         logger.info("gui_logout_start run_id=%s", self.run_id)
@@ -2021,6 +2268,9 @@ class MainWindow(QMainWindow):
             self.pause_button: "Pause or resume file discovery without finalizing.",
             self.open_input_button: "Open the real input directory when one is used.",
             self.finalize_button: "Finalize after all uploads complete.",
+            self.new_run_button: "Leave the current run locally without finalizing it; retain its saved records.",
+            self.select_run_button: "Select a locally saved run after verifying access with FoodPort.",
+            self.auto_restore_button: "Mark this run inactive locally so it does not reopen at next sign-in; does not change FoodPort.",
             self.logout_button: "Log out of FoodPort.",
             self.processing_details_toggle: "Show or hide detailed processing status.",
         }
@@ -2110,6 +2360,7 @@ class MainWindow(QMainWindow):
             return
         logger.info("gui_run_restore_start run_id=%s", saved["run_id"])
         self.run_id = saved["run_id"]
+        self._status_unavailable = False
         saved_state = saved["workflow_state"] or "processing"
         self._accepting_files = self.view_run_id is None and saved_state not in (
             "stopping", "complete", "error"
@@ -2160,6 +2411,7 @@ class MainWindow(QMainWindow):
         self.results_section.set_expanded(True)
         self.run_box.setEnabled(False)
         self.run_section.setVisible(False)
+        self.auto_restore_button.setEnabled(not self.headless_test)
         self.finalize_button.setEnabled(self._accepting_files)
         if self.view_run_id is not None:
             self.pause_button.setEnabled(False)

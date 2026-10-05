@@ -225,6 +225,31 @@ class QueueStore:
                 "SELECT * FROM runs WHERE run_id = ?", (run_id,)
             ).fetchone()
 
+    def list_runs(self):
+        """Return locally saved runs; caller must verify server access."""
+        with self.lock:
+            return self.connection.execute(
+                "SELECT * FROM runs ORDER BY started_at DESC"
+            ).fetchall()
+
+    def set_runs_active(self, changes: dict[int, bool]) -> None:
+        """Atomically change local startup eligibility without deleting history."""
+        if not changes:
+            return
+        with self.lock:
+            try:
+                for run_id, active in changes.items():
+                    result = self.connection.execute(
+                        "UPDATE runs SET active = ? WHERE run_id = ?",
+                        (int(bool(active)), int(run_id)),
+                    )
+                    if result.rowcount != 1:
+                        raise ValueError("Unknown locally saved run: {0}".format(run_id))
+                self.connection.commit()
+            except Exception:
+                self.connection.rollback()
+                raise
+
     def close_run(self, run_id: int) -> None:
         with self.lock:
             self.connection.execute(
