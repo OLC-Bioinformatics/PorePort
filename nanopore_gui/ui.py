@@ -286,11 +286,14 @@ class MainWindow(QMainWindow):
         test_wave_delay: float = 150.0,
         test_auto_finalize: bool = True,
         view_run_id: int | None = None,
+        headless_test: bool = False,
     ):
         super().__init__()
         self.client = client
         self.store = store
         self.test_mode = test_mode
+        self.headless_test = headless_test
+        self.headless_error = None
         self.view_run_id = view_run_id
         self.test_directory = test_directory
         self.test_wave_delay = test_wave_delay
@@ -939,6 +942,7 @@ class MainWindow(QMainWindow):
         """Keep collapsed, off-screen section headers reachable at either edge."""
         self._section_scroll = scroll
         self._floating_headers = {}
+        self._floating_update_scheduled = False
         viewport = scroll.viewport()
         for section in (self.status_section, self.results_section,
                         self.report_section):
@@ -986,7 +990,13 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._update_floating_headers)
 
     def _schedule_floating_headers(self, *args):
-        QTimer.singleShot(0, self._update_floating_headers)
+        if not self._floating_update_scheduled:
+            self._floating_update_scheduled = True
+            QTimer.singleShot(0, self._flush_floating_headers)
+
+    def _flush_floating_headers(self):
+        self._floating_update_scheduled = False
+        self._update_floating_headers()
 
     def _open_floating_section(self, section):
         section.set_expanded(True)
@@ -1038,12 +1048,10 @@ class MainWindow(QMainWindow):
             bottom -= gap
 
     def eventFilter(self, watched, event):
-        if hasattr(self, "_section_scroll") and watched in (
-                self._section_scroll.viewport(),
-                self._section_scroll.widget()):
-            if event.type() in (QEvent.Type.Resize, QEvent.Type.Show,
-                                QEvent.Type.LayoutRequest):
-                self._schedule_floating_headers()
+        if (hasattr(self, "_section_scroll")
+                and event.type() == QEvent.Type.Resize
+                and watched is self._section_scroll.viewport()):
+            self._schedule_floating_headers()
         return super().eventFilter(watched, event)
 
     @staticmethod
@@ -1403,10 +1411,14 @@ class MainWindow(QMainWindow):
     def _test_failed(self, error):
         self._cloud_seed_task = None
         self.status_label.setText("Test run failed.")
-        self._show_error(str(error))
+        self.headless_error = str(error) if self.headless_test else None
+        if not self.headless_test:
+            self._show_error(str(error))
         logger.error("gui_test_run_failed error=%s", error)
 
     def _create_failed(self, error):
+        if self.headless_test:
+            self.headless_error = str(error)
         self._create_task = None
         self.create_button.setEnabled(True)
         self._show_error(str(error))
@@ -1624,7 +1636,7 @@ class MainWindow(QMainWindow):
         if pending_count or failed_count:
             self._show_error(message + "\n\nResolve pending or failed uploads before finalizing.")
             return
-        if QMessageBox.question(self, "Confirm finalization", message, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+        if not self.headless_test and QMessageBox.question(self, "Confirm finalization", message, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
         self._accepting_files = False
         logger.info("gui_finalize_start run_id=%s", self.run_id)
@@ -1674,6 +1686,8 @@ class MainWindow(QMainWindow):
                     self.run_id, result.get("workflow_state", "unknown"))
 
     def _finalize_failed(self, error):
+        if self.headless_test:
+            self.headless_error = str(error)
         self._finalize_task = None
         self.finalize_button.setEnabled(True)
         self._show_error(str(error))
@@ -1723,7 +1737,7 @@ class MainWindow(QMainWindow):
         logger.info("gui_logout_complete")
 
     def closeEvent(self, event):
-        if self.run_id and (self._accepting_files or (self.uploader and not self.uploader.is_idle)):
+        if not self.headless_test and self.run_id and (self._accepting_files or (self.uploader and not self.uploader.is_idle)):
             answer = QMessageBox.question(self, "Active run", "A run is active. Closing the GUI will stop local file discovery until the run is restored. Close anyway?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore(); return
@@ -2058,6 +2072,9 @@ class MainWindow(QMainWindow):
 
     def _show_error(self, message):
         logger.error("gui_error message=%s", message)
+        if self.headless_test:
+            self.headless_error = str(message)
+            return
         dialog = QDialog(self)
         dialog.setWindowTitle("PorePort error")
         dialog.resize(760, 420)

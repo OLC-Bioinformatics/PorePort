@@ -7,8 +7,8 @@ A local PySide6 application for laboratory operators. It pairs with FoodPort, cr
 From the repository root, with Python 3.10 or newer:
 
 ```bash
-python -m venv .venv
-source .venv/Scripts/activate
+conda create -n poreport python=3.12
+conda activate poreport
 python -m pip install -r requirements.txt
 python -m nanopore_gui
 ```
@@ -64,11 +64,22 @@ python -m nanopore_gui --test-run --test-directory "C:\path\to\pod5-fixtures" --
 python -m nanopore_gui --view-run 42
 ```
 
-The default wave delay is 150 seconds. `--test-directory` requires `--test-run`. Cloud-copy test mode requires `AZURE_STORAGE_CONNECTION_STRING` with an account name and account key, plus access to the configured source fixture; no account key is bundled with the application.
+The default wave delay is 150 seconds. `--test-directory` is optional with `--test-run` or `--headless-test-run`. Cloud-copy test mode requires `AZURE_STORAGE_CONNECTION_STRING` with an account name and account key, plus access to the configured source fixture; no account key is bundled with the application.
+
+## Remote Linux headless development test
+
+This opt-in test creates and finalizes a **real FoodPort run**. Without `--test-directory`, it uses the same cloud-copy fixture and test metadata as interactive `--test-run`. Add `--test-directory` to use approved local POD5 fixtures instead. The approval URL appears in the SSH terminal; open it in an authorized browser, then enter the one-time code in the terminal. Cloud-copy mode requires an approved `AZURE_STORAGE_CONNECTION_STRING` on the controlled test host; local-fixture mode does not. Use a unique name and a trusted TLS configuration:
+
+```bash
+FOODPORT_VERIFY_SSL=false python -m nanopore_gui \
+  --headless-test-run --headless-run-name UNIQUE_TEST_RUN
+```
+
+`--headless-timeout` defaults to 14400 seconds. Do not combine headless mode with `--test-run`, `--view-run`, or `--test-no-finalize`. A unit-test pass does not establish a live end-to-end pass; check remote run state after timeout or failure before retrying. This is a developer test mode, not a frontline workflow.
 
 ## Validation and Linux distribution status
 
-On the Windows development workstation, the operator reported **166 passing tests** with `python -m pytest tests/` (Python 3.12.14) and a successful full GUI `--test-run`. This is a Windows baseline, not evidence of Linux compatibility or of every failure scenario. Run ID, source commit and redacted end-to-end evidence have not yet been recorded. See [testing and acceptance](docs/TESTING.md) and the [evidence ledger](docs/EVIDENCE_AND_OPEN_ITEMS.md).
+On the Windows development workstation, the operator reported **166 passing tests** with `python -m pytest tests/` (Python 3.12.14) and a successful full GUI `--test-run`. This is a Windows end-to-end baseline, not evidence of every failure scenario. On a remote Linux source checkout (Python 3.12.14), the operator subsequently reported **181 passing tests**; a live Linux headless or visible-GUI run and an installed-package test have not been recorded. Run ID, source commit and redacted end-to-end evidence have not yet been recorded. See [testing and acceptance](docs/TESTING.md) and the [evidence ledger](docs/EVIDENCE_AND_OPEN_ITEMS.md).
 
 Linux workstations are the intended distribution target. **No Linux installer or automatic update functionality is implemented or verified yet.** Before distribution, validate the GUI and tests on a representative Linux workstation, then build and test a Linux-native package. The [draft Linux packaging and deferred-update plan](docs/LINUX_PACKAGING_AND_UPDATES.md) proposes a Linux-built, one-directory PyInstaller pilot and prefers centrally managed updates where workstation policy permits. Update checks can remain offline until distribution is ready. Do not assume a Windows build can be distributed to Linux.
 

@@ -311,24 +311,23 @@ def test_upload_reports_bytes_read(monkeypatch, tmp_path):
         ok = True
         status_code = 201
         reason = "Created"
-
         def json(self):
             return {}
-
     client = FoodPortClient("https://example.test")
     progress = []
     source = tmp_path / "sample.pod5"
     source.write_bytes(b"data")
-
+    calls = []
     def put(url, **kwargs):
-        assert kwargs["data"].read() == b"data"
+        calls.append(kwargs)
+        if kwargs["params"]["comp"] == "block":
+            assert kwargs["data"] == b"data"
         return Response()
-
     monkeypatch.setattr(client._transfer_session(), "put", put)
     client.upload_blob("https://blob.test/sas", str(source), progress.append)
-
-    assert sum(progress) == 4
-
+    assert progress == [4]
+    assert [call["params"]["comp"] for call in calls] == ["block", "blocklist"]
+    client.close()
 
 def test_api_error_uses_server_detail():
     class Response:
@@ -355,25 +354,26 @@ def test_upload_request_does_not_add_foodport_auth(monkeypatch, tmp_path):
         ok = True
         status_code = 201
         reason = "Created"
-
         def json(self):
             return {}
-
-    captured = {}
-
+    captured = []
     def put(url, **kwargs):
-        captured.update(kwargs)
+        captured.append((url, kwargs))
         return Response()
-
     client = FoodPortClient("https://example.test")
     client._token = "secret"
     monkeypatch.setattr(client._transfer_session(), "put", put)
     source = tmp_path / "sample.pod5"
     source.write_bytes(b"data")
-    client.upload_blob("https://blob.test/sas", str(source))
-    assert "Authorization" not in captured["headers"]
-    assert captured["headers"]["x-ms-blob-type"] == "BlockBlob"
-
+    sas = "https://blob.test/sas?sig=upload-only"
+    client.upload_blob(sas, str(source))
+    assert len(captured) == 2
+    assert [item[1]["params"]["comp"] for item in captured] == ["block", "blocklist"]
+    assert all(url == sas for url, _ in captured)
+    assert all("Authorization" not in kwargs["headers"] for _, kwargs in captured)
+    assert all(kwargs["headers"]["x-ms-version"] == "2019-12-12" for _, kwargs in captured)
+    assert captured[-1][1]["headers"]["x-ms-blob-content-type"] == "application/octet-stream"
+    client.close()
 
 def test_tls_verification_setting_applies_to_both_sessions():
     client = FoodPortClient("https://example.test", verify=False)

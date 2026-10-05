@@ -76,3 +76,41 @@ def test_iteration_discovery_deduplicates_and_sorts():
     assert query._published_iterations({"reports": [
         {"generation": "3"}, {"iteration": 1}, {"generation": 3}, {}, "bad"
     ]}) == [1, 3]
+
+
+def test_report_generation_is_opt_in(tmp_path):
+    client = Mock()
+    client.iteration_result.return_value = {"report": {"outputs": [{"path": "scheduler/results/a.csv"}]}}
+    options = args(tmp_path)
+    query._download_new_iterations(client, options, {"reports": [{"iteration": 1}]}, set())
+    client.download_iteration_csvs.assert_not_called()
+
+
+def test_final_report_waits_for_latest_iteration(tmp_path, monkeypatch):
+    options = args(tmp_path)
+    options.final_report = True
+    generate = Mock()
+    monkeypatch.setattr(query, "generate_target_report", generate)
+    query._generate_latest_final(options, {"processing": {"reports": [
+        {"iteration": 1}, {"iteration": 2}]}}, {1})
+    generate.assert_not_called()
+
+
+def test_report_preview_downloads_csvs_and_builds_iteration(tmp_path, monkeypatch):
+    options = args(tmp_path)
+    options.generate_reports = True
+    client = Mock()
+    client.iteration_result.return_value = {"report": {"outputs": [{"path": "scheduler/results/a.csv"}]}}
+    csv_path = tmp_path / "a.csv"
+    csv_path.write_text("SEQID\nA\n", encoding="utf-8")
+    client.download_iteration_csvs.return_value = [csv_path]
+    preview = Mock(return_value={"summary_image": str(tmp_path / "summary.png")})
+    monkeypatch.setattr(query, "build_iteration_report", preview)
+    seen = set()
+    query._download_new_iterations(client, options, {"reports": [{"iteration": 1}]}, seen,
+                                   {"run_id": 42, "run_name": "trial"})
+    assert seen == {1}
+    assert client.download_iteration_csvs.call_count == 1
+    assert preview.call_args.args[0] == 1
+    assert preview.call_args.kwargs["context"]["lab_name"] == "OLC"
+    assert preview.call_args.kwargs["context"]["report_state"] == "Draft"

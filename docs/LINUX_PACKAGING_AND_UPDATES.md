@@ -4,7 +4,7 @@ Status: planning only. No Linux release artifact or auto-update mechanism is imp
 
 ## Decision and rationale
 
-The application is a PySide6 desktop GUI. Prefer a Linux-built PyInstaller **onedir** bundle for the first internal pilot on the organization's supported Linux workstation distribution and architecture, installed by a small, versioned deployment package or centrally managed software mechanism. Build and test on Linux, not on the Windows development machine. Keep the executable and bundled libraries in a versioned, read-only installation directory; keep queue, logs, user preferences, downloads and credentials outside it. Do not assume the current Windows run proves Linux compatibility.
+The application is a PySide6 desktop GUI. Prefer a Linux-built PyInstaller **onedir** bundle for the first internal pilot on the organization's supported Linux workstation distribution and architecture, installed by a small, versioned deployment package or centrally managed software mechanism. Build and test on Linux, not on the Windows development machine. Keep the executable and bundled libraries in a versioned, read-only installation directory; keep queue, logs, user preferences, downloads and credentials outside it. The Linux source-tree suite has passed, but visible GUI operation, a live headless end-to-end run and a Linux release artifact are not yet established.
 
 For a managed fleet, prefer a native `.deb` or `.rpm` wrapper only after the target distribution is known, or deploy the versioned onedir bundle with the organization's endpoint-management tooling. An AppImage is a possible portable pilot alternative if workstation policy permits it, but its portability, Qt/system-library integration, desktop integration and update behaviour require testing on each supported workstation image. Flatpak is an alternative only if permitted and if its sandbox can access the MinKNOW output paths, network and local report destinations. Do not introduce a second updater alongside an IT-managed package channel.
 
@@ -36,4 +36,8 @@ Update acceptance tests: same-version/no-network; corrupt or tampered manifest/a
 
 ## Evidence and release gate
 
-Windows evidence (user-reported, 29 September 2026): `python -m pytest tests/` passed 166 tests under Python 3.12.14 on Windows; the operator reported a successful full GUI end-to-end `--test-run` with intended results. Run ID, commit, logs, exact scenario and cleanup record were not provided, so the result is not independently auditable from this document. Linux source run, packaged-app acceptance and update tests remain outstanding.
+Windows evidence (user-reported, 29 September 2026): `python -m pytest tests/` passed 166 tests under Python 3.12.14 on Windows; the operator reported a successful full GUI end-to-end `--test-run` with intended results. Run ID, commit, logs, exact scenario and cleanup record were not provided, so the result is not independently auditable from this document. Linux source-tree tests were subsequently reported passing (181/181, Python 3.12.14). A completed live Linux GUI/headless run, packaged-app acceptance and update tests remain outstanding.
+
+### Linux source-test update, 2 October 2026
+
+The remote Linux source checkout passed `python -m pytest tests/` (181 tests, Python 3.12.14). The new `--headless-test-run` uses terminal pairing and approved local POD5 fixtures with Azure account credentials for cloud-copy (not local fixtures); it creates and finalizes a real test run. Its live end-to-end outcome has not been reported. Keep the visible workstation and clean installed-package tests in the release gate. The deferred-update decision above is unchanged.

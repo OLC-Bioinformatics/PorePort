@@ -1,6 +1,6 @@
 # GUI repository operator tools
 
-These are test/diagnostic utilities, not normal GUI intake. Run from the PoreSippR-GUI repository root with its Python 3.12 environment and installed dependencies (`requests`, `azure-storage-blob` for the seeder). Run `python tools/query_run_outputs.py --help` and `python tools/seed_blob_iterations.py --help` for exact current arguments.
+These are test/diagnostic utilities, not normal GUI intake. Run from the PorePort repository root with its Python 3.12 environment and installed dependencies (`requests`, `azure-storage-blob` for the seeder). Run `python tools/query_run_outputs.py --help` and `python tools/seed_blob_iterations.py --help` for exact current arguments.
 
 ## Read-only API query
 
@@ -12,6 +12,18 @@ export FOODPORT_VERIFY_SSL=true
 # Supply FOODPORT_TOKEN through an approved secret mechanism or use --pairing.
 python tools/query_run_outputs.py --run-id 1234 --pairing --watch --poll-seconds 15 --output-dir run-reports/1234
 ```
+
+## Optional local reporting from published iterations
+
+The default query saves status and redacted manifests only. `--generate-reports` additionally downloads published scheduler CSVs and builds local iteration tables, images and previews. `--final-report` also builds those iteration artifacts and a local **OLC Draft PDF/HTML** for the latest ready iteration, with generic unapproved fields and the date at generation time. `--regenerate` rebuilds cached local artifacts. The tool reads FoodPort results and writes local files; it does not create or finalize a run and needs no `AZURE_STORAGE_CONNECTION_STRING`. The downloaded CSVs and Draft report may contain sensitive results; store and share them accordingly.
+
+```bash
+export FOODPORT_VERIFY_SSL=true
+python tools/query_run_outputs.py --run-id 1234 --pairing \
+  --final-report --output-dir run-reports
+```
+
+Iteration artifacts are under `run-reports/run-1234/`. Add `--watch` to poll for newly published results. A Draft is not an approved laboratory report. Review its contents before use.
 
 ## Seeder: writes real data
 
@@ -28,7 +40,7 @@ The original tools default `FOODPORT_VERIFY_SSL` to false; set it to `true` wher
 
 ## Installation and tests
 
-The companion code bundle contains a complete replacement `tools/query_run_outputs.py` and two new tests under `tests/`. `tools/seed_blob_iterations.py` is unchanged. From the GUI repository root, after installing the project's dependencies, run:
+Both tools and their mocked tests are in the GUI repository; the query tests now include opt-in report generation. From the GUI repository root, after installing the project's dependencies, run:
 
 ```bash
 python -m pytest -q tests/test_query_run_outputs.py tests/test_seed_blob_iterations.py

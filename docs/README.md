@@ -1,6 +1,6 @@
 # PorePort Nanopore documentation
 
-Status: documentation snapshot, 29 September 2026. Source: supplied GUI, FoodPort, Batch-service and VM-image code; deployment configuration; Packer logs; GPU acceptance JSON. This is documentation, not a deployment or code change.
+Status: updated documentation snapshot, 2 October 2026. Earlier backend/image evidence remains historical; the Linux source-test result is recorded separately. Source: supplied GUI, FoodPort, Batch-service and VM-image code; deployment configuration; Packer logs; GPU acceptance JSON. This is documentation, not a deployment or code change.
 
 ## Start here
 
@@ -9,7 +9,9 @@ Status: documentation snapshot, 29 September 2026. Source: supplied GUI, FoodPor
 - [NANOPORE_TASK_WRAPPER_AND_STORAGE_PLAN.md](NANOPORE_TASK_WRAPPER_AND_STORAGE_PLAN.md): actual architecture, state machine, storage and publication.
 - [OPERATIONS.md](OPERATIONS.md): operator checks, configuration, deployment and recovery.
 - [NANOPORE_PACKER_IMAGE_BUILD.md](NANOPORE_PACKER_IMAGE_BUILD.md): image-build and GPU acceptance runbook.
-- [TESTING.md](TESTING.md): layered test strategy and recorded evidence.
+- [TESTING.md](TESTING.md): layered strategy and reported Windows/Linux evidence.
+- [OPERATOR_TOOLS.md](OPERATOR_TOOLS.md): read-only query, opt-in Draft reporting and controlled seeding.
+- [LINUX_PACKAGING_AND_UPDATES.md](LINUX_PACKAGING_AND_UPDATES.md): Linux pilot and deferred updates.
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md): symptom-to-check diagnostic guide.
 - [EVIDENCE_AND_OPEN_ITEMS.md](EVIDENCE_AND_OPEN_ITEMS.md): evidence ledger, known limitations and outstanding verification.
 
@@ -23,10 +25,10 @@ The supplied Batch environment selects gallery image `development/nanopore/versi
 
 ## Placement
 
-These Markdown files can live together under `docs/nanopore/` or in the existing documentation folder. The three existing consolidated filenames are retained without `_updated`. This archive does not contain secrets, source-code replacements, historical logs, or binary images.
+These Markdown files are in the repository `docs/` folder. This index is `docs/README.md`, separate from the root `README.md`. Keep signed URLs and private run evidence out of public documentation.
 
-Operator/test-only scripts in the GUI repository are documented in [OPERATOR_TOOLS.md](OPERATOR_TOOLS.md). The companion code/test replacement bundle is separate.
+Operator/test-only scripts in the GUI repository are documented in [OPERATOR_TOOLS.md](OPERATOR_TOOLS.md). The tools and tests are maintained in the GUI repository.
 
 ## Linux distribution and updates
 
-See `LINUX_PACKAGING_AND_UPDATES.md` for the proposed Linux pilot package and deferred update strategy. Linux packaging and auto-update are not yet implemented. The operator-reported Windows test outcomes are recorded in `TESTING.md` and `EVIDENCE_AND_OPEN_ITEMS.md`.
+See `LINUX_PACKAGING_AND_UPDATES.md` for the proposed Linux pilot package and deferred update strategy. Linux packaging and auto-update are not yet implemented. The reported Windows and Linux source-test outcomes are recorded in `TESTING.md`; a live Linux end-to-end or packaged release is not yet established. Update the evidence ledger when run-specific evidence is available.

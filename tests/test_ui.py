@@ -400,3 +400,39 @@ def test_target_report_requires_latest_cached_iteration(tmp_path, monkeypatch):
     window._generate_target_report()
     assert errors == ["The latest iteration is not cached yet."]
     assert window.api_pool.tasks == []
+
+
+def test_headless_finalize_bypasses_dialog_but_preserves_pending_guard(tmp_path, monkeypatch):
+    _application = QApplication.instance() or QApplication([])
+    window = ui.MainWindow(FakeClient(), QueueStore(tmp_path / "queue.sqlite3"),
+                           test_mode=True, test_directory=tmp_path, headless_test=True)
+    window.api_pool = CapturePool()
+    window.run_id = 42
+    window._accepting_files = True
+    window.store.add_pending(42, "sample.pod5", "sample.pod5", 12)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("headless mode must not open a confirmation dialog")
+    monkeypatch.setattr(ui.QMessageBox, "question", forbidden)
+    window._finalize()
+    assert window.api_pool.tasks == []
+    assert window._accepting_files
+    assert "Resolve pending or failed uploads" in window.headless_error
+
+
+def test_headless_error_is_recorded_without_modal_dialog(tmp_path, monkeypatch):
+    _application = QApplication.instance() or QApplication([])
+    window = ui.MainWindow(FakeClient(), QueueStore(tmp_path / "queue.sqlite3"),
+                           test_mode=True, test_directory=tmp_path, headless_test=True)
+    monkeypatch.setattr(ui.QDialog, "exec", lambda *a: (_ for _ in ()).throw(
+        AssertionError("headless error must not open a dialog")))
+    window._show_error("upload failed")
+    assert window.headless_error == "upload failed"
+
+
+def test_floating_header_resize_event_does_not_recurse(tmp_path):
+    _application, window = make_window(tmp_path)
+    window.show()
+    for _ in range(4):
+        window._section_scroll.viewport().resize(650, 450)
+        _application.processEvents()
+    assert window._section_scroll.viewport().width() == 650

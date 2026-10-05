@@ -165,3 +165,183 @@ def test_invalid_startup_combinations_are_rejected(startup, options, message):
     with pytest.raises(SystemExit, match=message):
         main.run(options)
     assert not hasattr(startup, "window")
+
+
+# Headless startup tests never contact FoodPort or create a real run.
+@pytest.mark.parametrize("options, message", [
+    (["--headless-test-run"], "requires --headless-run-name"),
+    (["--headless-test-run", "--test-directory", "."], "requires --headless-run-name"),
+    (["--headless-test-run", "--test-directory", "missing", "--headless-run-name", "trial"], "readable directory"),
+    (["--headless-test-run", "--test-directory", ".", "--headless-run-name", "trial", "--test-run"], "cannot combine"),
+    (["--headless-test-run", "--test-directory", ".", "--headless-run-name", "trial", "--test-no-finalize"], "cannot combine"),
+    (["--headless-test-run", "--test-directory", ".", "--headless-run-name", "trial", "--headless-timeout", "0"], "must be positive"),
+])
+def test_headless_invalid_options_rejected_before_pairing(startup, options, message):
+    with pytest.raises(SystemExit, match=message):
+        main.run(options)
+    assert not hasattr(startup, "window")
+
+
+def test_headless_arguments():
+    parsed = main._arguments(["--headless-test-run", "--headless-run-name", "trial",
+                              "--test-directory", "fixtures", "--headless-timeout", "90"])
+    assert parsed.headless_test_run is True
+    assert parsed.headless_run_name == "trial"
+    assert parsed.test_directory == Path("fixtures")
+    assert parsed.headless_timeout == 90
+
+
+def test_headless_pairing_failure_never_creates_run(startup, monkeypatch, tmp_path):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    class Client:
+        closed = False
+        def start_pairing(self):
+            return {"pairing_id": "pair-1", "approval_url": "https://example.test/approve"}
+        def exchange_pairing(self, pairing_id, code):
+            raise RuntimeError("pairing denied")
+        def close(self):
+            self.closed = True
+    client = Client()
+    monkeypatch.setattr(main, "FoodPortClient", lambda *a, **k: client)
+    monkeypatch.setattr(main.webbrowser, "open", lambda url: False)
+    monkeypatch.setattr(main.getpass, "getpass", lambda *a: "000000")
+    with pytest.raises(RuntimeError, match="pairing denied"):
+        main.run(["--headless-test-run", "--test-directory", str(fixture),
+                  "--headless-run-name", "trial"])
+    assert client.closed
+    assert not hasattr(startup, "window")
+
+
+def test_headless_pairing_and_report_gated_success(startup, monkeypatch, tmp_path, capsys):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    calls = []
+    class Client:
+        def start_pairing(self):
+            calls.append("start")
+            return {"pairing_id": "pair-1", "approval_url": "https://example.test/approve"}
+        def exchange_pairing(self, pairing_id, code):
+            calls.append((pairing_id, code))
+        def close(self):
+            calls.append("close")
+    class Store:
+        def close(self):
+            calls.append("store-close")
+    class Window:
+        def __init__(self, client, store, **kwargs):
+            startup.window = self
+            startup.kwargs = kwargs
+            self.client, self.store = client, store
+            self.run_name = SimpleNamespace(setText=lambda name: calls.append(("name", name)))
+            self.headless_error = None
+            self.run_id = None
+            self._last_status = {}
+            self._report_documents = {}
+            self._cloud_seed_task = None
+            self.test_controller = None
+            self._iteration_result_tasks = {}
+            self._target_report_task = None
+            self.lab_name = SimpleNamespace(setCurrentText=lambda value: calls.append(("lab", value)))
+            self.report_lab = SimpleNamespace(findData=lambda value: 0, setCurrentIndex=lambda value: None)
+            self.report_state = SimpleNamespace(setCurrentText=lambda value: None)
+            self._target_report_marker = lambda: None
+            self._generate_target_report = lambda: calls.append("generate-report")
+            self.bar = SimpleNamespace(addWidget=lambda *a: None)
+        def statusBar(self):
+            return self.bar
+        def _pairing_succeeded(self, result):
+            calls.append("paired")
+        def _run_preflight(self):
+            calls.append("preflight")
+            return True
+        def _create_run(self):
+            calls.append("create")
+            self.run_id = 42
+            self._last_status = {"workflow_state": "complete", "processing": {"reports": [{"iteration": 1}]}}
+            self._report_documents = {1: {"iterations": [{"iteration": 1, "rows": [{}]}]}}
+        def close(self):
+            calls.append("window-close")
+    class Timer:
+        @staticmethod
+        def singleShot(milliseconds, callback):
+            assert milliseconds == 0
+            callback()
+
+        def __init__(self, parent):
+            self.timeout = SimpleNamespace(connect=lambda fn: setattr(startup, "check", fn))
+
+        def start(self, interval):
+            assert interval == 2000
+    def event_loop():
+        startup.check()  # completed workflow alone must not count as success
+        assert "Headless test complete" not in capsys.readouterr().out
+        assert "window-close" not in calls
+        return 0
+    monkeypatch.setattr(main, "FoodPortClient", lambda *a, **k: Client())
+    monkeypatch.setattr(main, "QueueStore", lambda *a: Store())
+    monkeypatch.setattr(main, "MainWindow", Window)
+    monkeypatch.setattr(main, "QTimer", Timer)
+    monkeypatch.setattr(main.webbrowser, "open", lambda url: False)
+    monkeypatch.setattr(main.getpass, "getpass", lambda *a: "123456")
+    monkeypatch.setattr(main.QApplication, "exec", lambda self: event_loop())
+    monkeypatch.setattr(main.QApplication, "quit", lambda self: calls.append("app-quit"), raising=False)
+    result = main.run(["--headless-test-run", "--test-directory", str(fixture),
+                       "--headless-run-name", "trial"])
+    assert result == 1
+    assert calls.index(("pair-1", "123456")) < calls.index("create")
+    assert startup.kwargs["headless_test"] is True
+    assert startup.kwargs["test_mode"] is True
+    assert ("name", "trial") in calls
+    assert "generate-report" in calls
+    assert "window-close" not in calls
+
+
+def test_headless_cloud_fixture_without_directory(startup, monkeypatch):
+    calls = []
+    class Client:
+        def start_pairing(self):
+            return {"pairing_id": "p", "approval_url": "https://example.test/approve"}
+        def exchange_pairing(self, pairing_id, code):
+            calls.append("paired")
+        def close(self):
+            pass
+    class Field:
+        def setText(self, value):
+            pass
+        def setCurrentText(self, value):
+            pass
+        def findData(self, value):
+            return 0
+        def setCurrentIndex(self, value):
+            pass
+    class Window:
+        def __init__(self, client, store, **kwargs):
+            startup.kwargs = kwargs
+            self.run_name = self.lab_name = self.report_lab = self.report_state = Field()
+        def statusBar(self):
+            return SimpleNamespace(addWidget=lambda *args: None)
+        def _pairing_succeeded(self, data):
+            pass
+        def _run_preflight(self):
+            return True
+        def _create_run(self):
+            calls.append("created")
+    class Timer:
+        @staticmethod
+        def singleShot(delay, callback):
+            callback()
+        def __init__(self, parent):
+            self.timeout = SimpleNamespace(connect=lambda callback: None)
+        def start(self, delay):
+            pass
+    monkeypatch.setattr(main, "FoodPortClient", lambda *args, **kwargs: Client())
+    monkeypatch.setattr(main, "MainWindow", Window)
+    monkeypatch.setattr(main, "QTimer", Timer)
+    monkeypatch.setattr(main.webbrowser, "open", lambda url: False)
+    monkeypatch.setattr(main.getpass, "getpass", lambda *args: "123456")
+    assert main.run(["--headless-test-run", "--headless-run-name", "trial"]) == 1
+    assert startup.kwargs["test_directory"] is None
+    assert startup.kwargs["test_mode"] is True
+    assert startup.kwargs["test_auto_finalize"] is True
+    assert calls == ["paired", "created"]

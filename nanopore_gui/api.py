@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import re
 import threading
+import uuid
 from pathlib import Path
 from time import monotonic
 from urllib.parse import urlsplit
+from xml.sax.saxutils import escape
 
 import requests
 import urllib3
@@ -572,42 +575,71 @@ class FoodPortClient:
         local_path: str,
         progress=None,
     ) -> None:
-        """Upload one local blob using its SAS URL."""
+        """Stage bounded blocks via the prepared SAS, then commit the blob.
+
+        FoodPort must only receive complete_file after this method returns.
+        Each attempt uses distinct block IDs so a retry cannot commit stale
+        blocks left uncommitted by an earlier interrupted upload.
+        """
+        block_size = 8 * 1024 * 1024
         filename = os.path.basename(local_path)
-        logger.info(
-            "blob_upload_start filename=%s size_bytes=%s",
-            filename,
-            os.path.getsize(local_path),
-        )
-
+        size = os.path.getsize(local_path)
+        logger.info("blob_upload_start filename=%s size_bytes=%s", filename, size)
+        session = self._transfer_session()
+        prefix = uuid.uuid4().hex
+        block_ids = []
         with open(local_path, "rb") as handle:
-            try:
-                response = self._transfer_session().put(
-                    upload_url,
-                    data=_ProgressReader(handle, progress),
-                    headers={
-                        "x-ms-blob-type": "BlockBlob",
-                        "Content-Type": "application/octet-stream",
-                    },
-                    timeout=(10, 3600),
-                )
-            except requests.RequestException as exc:
-                logger.warning(
-                    "blob_upload_network_error filename=%s error=%s",
-                    filename,
-                    exc,
-                )
-                raise FoodPortError(
-                    0,
-                    f"Network unavailable: {exc}",
-                ) from exc
-
-        logger.info(
-            "blob_upload_complete filename=%s status=%s",
-            filename,
-            response.status_code,
-        )
-        self._decode(response)
+            index = 0
+            while True:
+                chunk = handle.read(block_size)
+                if not chunk:
+                    break
+                # Fixed-width raw ID; Azure requires equal-length block IDs.
+                block_id = base64.b64encode(
+                    (prefix + "-{0:08d}".format(index)).encode("ascii")
+                ).decode("ascii")
+                try:
+                    response = session.put(
+                        upload_url,
+                        params={"comp": "block", "blockid": block_id},
+                        data=chunk,
+                        headers={"x-ms-version": "2019-12-12",
+                                 "Content-Type": "application/octet-stream"},
+                        timeout=(10, 3600),
+                    )
+                except requests.RequestException as exc:
+                    logger.warning("blob_upload_network_error filename=%s phase=block error_type=%s",
+                                   filename, type(exc).__name__)
+                    raise FoodPortError(0, "Blob block upload network error") from exc
+                self._decode(response, "PUT blob block")
+                block_ids.append(block_id)
+                if progress:
+                    progress(len(chunk))
+                index += 1
+        if not block_ids:
+            raise FoodPortError(0, "Cannot upload an empty POD5 file")
+        payload = ("<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+                   "<BlockList>" + "".join(
+                       "<Latest>{0}</Latest>".format(escape(block_id))
+                       for block_id in block_ids
+                   ) + "</BlockList>").encode("utf-8")
+        try:
+            response = session.put(
+                upload_url,
+                params={"comp": "blocklist"},
+                data=payload,
+                headers={"x-ms-version": "2019-12-12",
+                         "Content-Type": "application/xml",
+                         "x-ms-blob-content-type": "application/octet-stream"},
+                timeout=(10, 3600),
+            )
+        except requests.RequestException as exc:
+            logger.warning("blob_upload_network_error filename=%s phase=commit error_type=%s",
+                           filename, type(exc).__name__)
+            raise FoodPortError(0, "Blob block-list commit network error") from exc
+        self._decode(response, "PUT blob block list")
+        logger.info("blob_upload_complete filename=%s status=%s blocks=%s",
+                    filename, response.status_code, len(block_ids))
 
     def close(self) -> None:
         """Close HTTP sessions and forget the local authentication token."""

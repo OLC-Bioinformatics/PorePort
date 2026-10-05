@@ -15,7 +15,7 @@
 - Verify each input generation is claimed once and later generations do not overtake unpublished earlier results.
 - Verify result manifest exists before declaring iteration complete; check `latest.json` points to the expected generation.
 - Verify scheduler CSV `download_url` points under the correct iteration directory, without printing the SAS token.
-- Verify the desktop generated report only after the user pressed Generate report and that the selected laboratory and fields match.
+- For the interactive GUI, verify the report appears only after pressing Generate report and that laboratory and fields match. Validate the separate opt-in query-tool Draft report independently.
 - Finalize with pending files to verify 409; finalize with zero files to verify 400; finalize a complete intake and observe stopping-to-complete and resource cleanup.
 - Exercise network interruption, expired SAS, retry, long-lived run exceeding task/SAS limits, and a failed Batch task. Document observed outcomes; do not assume success from a test fixture.
 
@@ -30,3 +30,16 @@ Run `python -m pytest -q tests/test_query_run_outputs.py tests/test_seed_blob_it
 ## Operator-reported Windows verification, 29 September 2026
 
 On a Windows workstation with Python 3.12.14, the operator reported `python -m pytest tests/`: **166 passed in 9.04s**. The operator also reported a successful full GUI end-to-end `--test-run` with intended results. These statements document reported outcomes, not a retained release sign-off: run ID, commit, detailed stage checklist and redacted evidence have not been supplied. Do not infer that each negative-path item above was exercised. Before Linux distribution, repeat the full suite and end-to-end scenario from source and from the installed Linux package. See `LINUX_PACKAGING_AND_UPDATES.md` for the packaging and deferred update acceptance criteria.
+
+### Linux source-tree result, operator-reported 2 October 2026
+
+`python -m pytest tests/` on remote Linux with Python 3.12.14: **181 passed**. This includes mocked headless-startup and query-report tests. This is not a live headless run, a visible desktop test, or an installed Linux package test. Source commit, distribution version and live run ID were not supplied. The historical Windows 166-test pass and interactive `--test-run` remain separate evidence.
+
+### Live Linux headless acceptance still outstanding
+
+With an approved local fixture and unique run name, use terminal pairing, then verify uploads, result publication, locally generated report, finalization and remote cleanup. Record run ID, source commit, host, image version, redacted logs and exit status. The mode creates a real run and finalizes it; investigate remote state before retrying after failure or timeout. A complete workflow without a locally generated report must not count as a successful headless test.
+
+```bash
+FOODPORT_VERIFY_SSL=false python -m nanopore_gui \
+  --headless-test-run --headless-run-name UNIQUE_TEST_RUN
+```
