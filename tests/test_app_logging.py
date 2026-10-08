@@ -121,3 +121,28 @@ def test_configure_logging_adds_one_handler_per_distinct_log_directory(
     assert {Path(handler.baseFilename) for handler in clean_gui_logger.handlers} == {
         first, second
     }
+
+
+def test_private_per_session_fatal_log_and_retention(tmp_path, monkeypatch):
+    import os
+    from nanopore_gui import app_logging
+    import faulthandler
+    monkeypatch.setattr(faulthandler, "enable", lambda **kwargs: None)
+    monkeypatch.setattr(app_logging, "_FATAL_HANDLE", None)
+    monkeypatch.setattr(app_logging, "_FATAL_PATH", None)
+    folder = tmp_path / "logs"
+    folder.mkdir()
+    for index in range(7):
+        path = folder / ("nanopore-gui-fatal-old%d.log" % index)
+        path.write_text("old")
+        os.utime(path, (index, index))
+    path = app_logging.configure_crash_diagnostics(folder)
+    assert path.exists()
+    assert app_logging.configure_crash_diagnostics(folder) == path
+    assert len(list(folder.glob("nanopore-gui-fatal-*.log"))) == 5
+    if os.name == "posix":
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert folder.stat().st_mode & 0o777 == 0o700
+    app_logging._FATAL_HANDLE.close()
+    monkeypatch.setattr(app_logging, "_FATAL_HANDLE", None)
+    monkeypatch.setattr(app_logging, "_FATAL_PATH", None)

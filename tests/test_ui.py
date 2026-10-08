@@ -74,9 +74,11 @@ def test_pairing_code_entry_queues_exchange_task(monkeypatch, tmp_path):
     class FakePairingTask(QObject):
         succeeded = Signal(dict)
         failed = Signal(Exception)
+        finished = Signal(object)
 
         def __init__(self, client, pairing_id, code):
             super().__init__()
+            self.signals = self
             captured.update(client=client, pairing_id=pairing_id, code=code)
 
     monkeypatch.setattr(ui, "_PairingExchangeTask", FakePairingTask)
@@ -436,3 +438,40 @@ def test_floating_header_resize_event_does_not_recurse(tmp_path):
         window._section_scroll.viewport().resize(650, 450)
         _application.processEvents()
     assert window._section_scroll.viewport().width() == 650
+
+
+def test_task_lifetime_and_queued_cleanup(tmp_path):
+    application, window = make_window(tmp_path)
+    task = ui._ApiTask(lambda: {"ok": True})
+    assert not task.autoDelete()
+    results = []
+    task.succeeded.connect(results.append)
+    window._start_api_task(task)
+    assert id(task) in window._pool_tasks
+    task.run()
+    for _ in range(10):
+        application.processEvents()
+        if id(task) not in window._pool_tasks:
+            break
+    assert results == [{"ok": True}]
+    assert id(task) not in window._pool_tasks
+
+
+def test_status_callback_ignores_previous_run_generation(tmp_path):
+    _application, window = make_window(tmp_path)
+    window.run_id = 42
+    window._tick()
+    task = window.api_pool.tasks[-1]
+    window._run_generation += 1
+    window.run_id = 43
+    task.succeeded.emit({"workflow_state": "complete"})
+    _application.processEvents()
+    assert window._last_status is None
+
+
+def test_closing_blocks_new_api_submissions(tmp_path):
+    _application, window = make_window(tmp_path)
+    window._closing = True
+    import pytest
+    with pytest.raises(RuntimeError, match="closing"):
+        window._start_api_task(ui._ApiTask(lambda: {}))

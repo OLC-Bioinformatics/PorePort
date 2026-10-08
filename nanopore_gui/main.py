@@ -14,14 +14,14 @@ from PySide6.QtGui import QIcon
 from PySide6.QtCore import QUrl, QTimer
 
 if __package__:
-    from .app_logging import configure_logging
+    from .app_logging import configure_logging, configure_crash_diagnostics
     from .api import FoodPortClient
     from .storage import QueueStore
     from .reports import repository_asset
     from .ui import MainWindow
 else:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from nanopore_gui.app_logging import configure_logging
+    from nanopore_gui.app_logging import configure_logging, configure_crash_diagnostics
     from nanopore_gui.api import FoodPortClient
     from nanopore_gui.storage import QueueStore
     from nanopore_gui.reports import repository_asset
@@ -122,6 +122,14 @@ def run(argv=None):
     data_dir = Path(os.getenv("APPDATA", Path.home())) / "NanoporeCloudGUI"
     data_dir.mkdir(parents=True, exist_ok=True)
     log_path = configure_logging(data_dir / "logs")
+    fatal_path = configure_crash_diagnostics(data_dir / "logs")
+    import logging
+    import PySide6
+    logging.getLogger("nanopore_gui").info(
+        "gui_launch pid=%s python=%s pyside=%s test_mode=%s headless=%s "
+        "fatal_log=%s", os.getpid(), sys.version.split()[0], PySide6.__version__,
+        arguments.test_run, arguments.headless_test_run, fatal_path)
+
     if arguments.test_directory and not (arguments.test_run or arguments.headless_test_run):
         raise SystemExit("--test-directory requires --test-run")
     if arguments.view_run is not None and arguments.view_run <= 0:

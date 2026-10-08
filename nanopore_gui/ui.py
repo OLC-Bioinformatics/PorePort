@@ -15,7 +15,7 @@ import time
 import webbrowser
 import re
 
-from PySide6.QtCore import QFileSystemWatcher, QObject, QRunnable, QThreadPool, QTimer, QSize, QRectF, QPoint, Qt, Signal, QEvent
+from PySide6.QtCore import QFileSystemWatcher, QObject, QRunnable, QThreadPool, QTimer, QSize, QRectF, QPoint, Qt, Signal, QEvent, Slot
 from PySide6.QtGui import QColor, QKeySequence, QPixmap, QCursor, QImageReader, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QFileDialog, QComboBox, QFormLayout, QGridLayout,
@@ -42,26 +42,43 @@ from .version import __version__
 logger = logging.getLogger("nanopore_gui.ui")
 
 
-class _ApiTask(QObject, QRunnable):
+class _TaskSignals(QObject):
     succeeded = Signal(dict)
     failed = Signal(Exception)
+    progress = Signal(str)
+    finished = Signal(object)
 
+
+class _ApiTask(QRunnable):
+    """Keep the QObject signal emitter separate from the pool-owned runnable."""
     def __init__(self, operation):
-        QObject.__init__(self)
-        QRunnable.__init__(self)
+        super().__init__()
+        self.setAutoDelete(False)
         self.operation = operation
+        self.signals = _TaskSignals()
+        self.succeeded = self.signals.succeeded
+        self.failed = self.signals.failed
+        self.progress = self.signals.progress
 
     def run(self):
+        started = time.monotonic()
+        name = type(self).__name__
+        logger.info("gui_task_started kind=%s", name)
         try:
-            self.succeeded.emit(self.operation())
+            result = self.operation()
         except Exception as exc:
             if not (
                 getattr(self, "suppress_not_published_log", False)
-                and isinstance(exc, FoodPortError)
-                and exc.status == 404
+                and isinstance(exc, FoodPortError) and exc.status == 404
             ):
-                logger.exception("background_operation_failed")
+                logger.exception("background_operation_failed kind=%s", name)
             self.failed.emit(exc)
+        else:
+            logger.info("gui_task_succeeded kind=%s elapsed_ms=%d",
+                        name, int((time.monotonic() - started) * 1000))
+            self.succeeded.emit(result)
+        finally:
+            self.signals.finished.emit(id(self))
 
 
 class _StatusTask(_ApiTask):
@@ -120,7 +137,6 @@ class _PairingExchangeTask(_ApiTask):
 
 
 class _CloudSeedTask(_ApiTask):
-    progress = Signal(str)
 
     def __init__(
         self,
@@ -312,6 +328,9 @@ class MainWindow(QMainWindow):
         self.watcher = QFileSystemWatcher(self)
         self.watcher.directoryChanged.connect(self._tick)
         self.api_pool = QThreadPool(self)
+        self._pool_tasks = {}
+        self._closing = False
+        self._run_generation = 0
         self._status_in_flight = False
         self._status_unavailable = False
         self._select_run_task = None
@@ -1116,6 +1135,31 @@ class MainWindow(QMainWindow):
         self.select_run_button.setEnabled(bool(active and not self.headless_test))
         self.auto_restore_button.setEnabled(bool(active and self.run_id and not self.headless_test))
 
+    def _start_api_task(self, task):
+        """Retain signal objects across worker completion and queued GUI delivery."""
+        if self._closing:
+            raise RuntimeError("Cannot submit a task while closing")
+        key = id(task)
+        task.signals.setParent(self)
+        self._pool_tasks[key] = task
+        task.signals.finished.connect(self._api_task_finished, Qt.ConnectionType.QueuedConnection)
+        logger.info("gui_task_queued kind=%s active=%d run_id=%s",
+                    type(task).__name__, len(self._pool_tasks), self.run_id)
+        try:
+            self.api_pool.start(task)
+        except Exception:
+            self._pool_tasks.pop(key, None)
+            task.signals.deleteLater()
+            raise
+
+    @Slot(object)
+    def _api_task_finished(self, key):
+        task = self._pool_tasks.pop(key, None)
+        if task is not None:
+            logger.info("gui_task_delivered kind=%s active=%d run_id=%s",
+                        type(task).__name__, len(self._pool_tasks), self.run_id)
+            task.signals.deleteLater()
+
     def _start_pairing(self):
         logger.info("gui_pairing_start")
         self.pair_button.setEnabled(False)
@@ -1123,7 +1167,7 @@ class MainWindow(QMainWindow):
         self._pairing_task = _PairingStartTask(self.client)
         self._pairing_task.succeeded.connect(self._pairing_started)
         self._pairing_task.failed.connect(self._pairing_failed)
-        self.api_pool.start(self._pairing_task)
+        self._start_api_task(self._pairing_task)
 
     def _pairing_started(self, data):
         self._pairing_task = None
@@ -1145,7 +1189,7 @@ class MainWindow(QMainWindow):
         )
         self._pairing_task.succeeded.connect(self._pairing_succeeded)
         self._pairing_task.failed.connect(self._pairing_failed)
-        self.api_pool.start(self._pairing_task)
+        self._start_api_task(self._pairing_task)
 
     def _pairing_succeeded(self, _result):
         self._pairing_task = None
@@ -1304,11 +1348,12 @@ class MainWindow(QMainWindow):
         self._create_task = _ApiTask(lambda: self.client.create_run(run_name, metadata))
         self._create_task.succeeded.connect(self._create_succeeded)
         self._create_task.failed.connect(self._create_failed)
-        self.api_pool.start(self._create_task)
+        self._start_api_task(self._create_task)
 
     def _create_succeeded(self, data):
         self._create_task = None
         try:
+            self._run_generation += 1
             self.run_id = int(data["run_id"])
         except (KeyError, ValueError, TypeError) as exc:
             self.create_button.setEnabled(True)
@@ -1389,7 +1434,7 @@ class MainWindow(QMainWindow):
         self._cloud_seed_task.progress.connect(self._test_progress_message)
         self._cloud_seed_task.succeeded.connect(self._cloud_test_succeeded)
         self._cloud_seed_task.failed.connect(self._test_failed)
-        self.api_pool.start(self._cloud_seed_task)
+        self._start_api_task(self._cloud_seed_task)
 
     def _start_local_test_waves(self, staging: Path):
         self.status_label.setText(
@@ -1495,23 +1540,27 @@ class MainWindow(QMainWindow):
         if not self._status_in_flight and not self._status_unavailable:
             self._status_in_flight = True
             polled_id = self.run_id
+            generation = self._run_generation
+            logger.info("gui_status_poll_queued run_id=%s", polled_id)
             task = _StatusTask(self.client, polled_id)
             task.succeeded.connect(
-                lambda result, rid=polled_id: self._status_succeeded(result)
-                if self.run_id == rid else None)
+                lambda result, rid=polled_id, gen=generation: self._status_succeeded(result)
+                if self.run_id == rid and self._run_generation == gen and not self._closing else None)
             task.failed.connect(
-                lambda error, rid=polled_id: self._status_failed(error)
-                if self.run_id == rid else None)
-            self.api_pool.start(task)
+                lambda error, rid=polled_id, gen=generation: self._status_failed(error)
+                if self.run_id == rid and self._run_generation == gen and not self._closing else None)
+            self._start_api_task(task)
 
     def _status_succeeded(self, status):
         self._status_in_flight = False
+        logger.info("gui_status_poll_delivered run_id=%s", self.run_id)
         if self.run_id:
             self._status_unavailable = False
             self._last_status = status
             self.network.setText("Connected")
             workflow_state = status.get("workflow_state", "unknown")
-            if self.view_run_id is None and self.store.run(self.run_id)["active"]:
+            saved_run = self.store.run(self.run_id)
+            if self.view_run_id is None and saved_run is not None and saved_run["active"]:
                 self.store.update_run_status(self.run_id, workflow_state)
             if workflow_state in ("stopping", "complete", "error"):
                 self._accepting_files = False
@@ -1591,7 +1640,7 @@ class MainWindow(QMainWindow):
         task = _LatestResultTask(self.client, self.run_id)
         task.succeeded.connect(self._latest_result_succeeded)
         task.failed.connect(self._latest_result_failed)
-        self.api_pool.start(task)
+        self._start_api_task(task)
 
     def _latest_result_succeeded(self, result):
         self._result_in_flight = False
@@ -1629,7 +1678,7 @@ class MainWindow(QMainWindow):
             task.failed.connect(
                 lambda error, item=iteration: self._iteration_result_failed(item, error)
             )
-            self.api_pool.start(task)
+            self._start_api_task(task)
 
     def _iteration_result_succeeded(self, iteration, result):
         self._iteration_result_tasks.pop(iteration, None)
@@ -1715,7 +1764,7 @@ class MainWindow(QMainWindow):
         self._finalize_task = _ApiTask(lambda: self.client.finalize(run_id))
         self._finalize_task.succeeded.connect(self._finalize_succeeded)
         self._finalize_task.failed.connect(self._finalize_failed)
-        self.api_pool.start(self._finalize_task)
+        self._start_api_task(self._finalize_task)
 
     def _finalize_succeeded(self, result):
         self._finalize_task = None
@@ -1767,6 +1816,7 @@ class MainWindow(QMainWindow):
             self.uploader = None
         if old_id is not None and self.view_run_id is None:
             self.store.close_run(old_id)
+        self._run_generation += 1
         self.run_id = None
         self.view_run_id = None
         self.run_started = None
@@ -1933,7 +1983,7 @@ class MainWindow(QMainWindow):
         self._select_run_task.succeeded.connect(
             lambda status, rid=chosen: self._selected_run_checked(rid, status))
         self._select_run_task.failed.connect(self._selected_run_failed)
-        self.api_pool.start(self._select_run_task)
+        self._start_api_task(self._select_run_task)
         self.status_label.setText("Checking FoodPort access to run {0}...".format(chosen))
 
     def _selected_run_failed(self, error):
@@ -1988,6 +2038,8 @@ class MainWindow(QMainWindow):
             answer = QMessageBox.question(self, "Active run", "A run is active. Closing the GUI will stop local file discovery until the run is restored. Close anyway?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore(); return
+        self._closing = True
+        self._run_generation += 1
         self.timer.stop()
         current_paths = self.watcher.directories()
         if current_paths:
@@ -1999,7 +2051,9 @@ class MainWindow(QMainWindow):
             self.test_controller = None
         if self.uploader:
             self.uploader.close(wait=True)
+        logger.info("gui_shutdown_waiting_for_tasks active=%d", len(self._pool_tasks))
         self.api_pool.waitForDone()
+        logger.info("gui_shutdown_tasks_finished")
         self.client.close()
         self.store.close()
         event.accept()
@@ -2359,6 +2413,7 @@ class MainWindow(QMainWindow):
         if self.view_run_id is None and not Path(saved["local_path"]).is_dir():
             return
         logger.info("gui_run_restore_start run_id=%s", saved["run_id"])
+        self._run_generation += 1
         self.run_id = saved["run_id"]
         self._status_unavailable = False
         saved_state = saved["workflow_state"] or "processing"
@@ -2770,7 +2825,7 @@ class MainWindow(QMainWindow):
         task.succeeded.connect(lambda result, item=iteration: self._target_report_generated(item, result))
         task.failed.connect(lambda error, item=iteration: self._target_report_failed(item, error))
         self._refresh_target_report()
-        self.api_pool.start(task)
+        self._start_api_task(task)
 
     def _target_report_generated(self, iteration, result):
         self._target_report_task = None

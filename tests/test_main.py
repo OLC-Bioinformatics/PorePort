@@ -113,6 +113,7 @@ def startup(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "FoodPortClient", lambda url, **kw: (url, kw))
     monkeypatch.setattr(main, "QueueStore", lambda path: path)
     monkeypatch.setattr(main, "configure_logging", lambda path: path / "nanopore-gui.log")
+    monkeypatch.setattr(main, "configure_crash_diagnostics", lambda path: path / "nanopore-gui-fatal-test.log")
     monkeypatch.setattr(main, "repository_asset", lambda name: tmp_path / name)
     monkeypatch.setattr(main.sys, "exit", lambda code: (_ for _ in ()).throw(SystemExit(code)))
     monkeypatch.setenv("APPDATA", str(tmp_path))
