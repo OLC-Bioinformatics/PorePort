@@ -32,6 +32,7 @@ from .storage import QueueStore
 from .test_mode import (
     DEFAULT_BARCODES,
     DEFAULT_SAMPLE_METADATA,
+    DEFAULT_RELEASE_SIZES,
     LocalWaveController,
     seed_cloud_waves,
 )
@@ -931,7 +932,7 @@ class MainWindow(QMainWindow):
         self.open_input_button = QPushButton("Open input folder")
         self.open_input_button.clicked.connect(lambda: self._open_path(Path(self.folder.text())) if self.folder.text() else None)
         self.finalize_button = QPushButton("Finalize run")
-        self.finalize_button.clicked.connect(self._finalize)
+        self.finalize_button.clicked.connect(lambda _checked=False: self._finalize())
         self.logout_button = QPushButton("Log out")
         self.logout_button.clicked.connect(self._logout)
         actions.addWidget(self.pause_button)
@@ -1437,8 +1438,12 @@ class MainWindow(QMainWindow):
         self._start_api_task(self._cloud_seed_task)
 
     def _start_local_test_waves(self, staging: Path):
+        logger.info(
+            "gui_local_test_wave_plan run_id=%s files=%s wave_sizes=%s",
+            self.run_id, sum(DEFAULT_RELEASE_SIZES), DEFAULT_RELEASE_SIZES,
+        )
         self.status_label.setText(
-            "Starting local fixture waves (3,7,2,5,6)."
+            "Starting five local fixture waves (3,7,2,5,6; 23 files)."
         )
         self.test_controller = LocalWaveController(
             self._test_source_directory,
@@ -1471,12 +1476,14 @@ class MainWindow(QMainWindow):
 
     def _test_local_finished(self):
         self.test_controller = None
+        logger.info(
+            "gui_local_test_waves_finished run_id=%s auto_finalize=%s",
+            self.run_id, self.test_auto_finalize,
+        )
         self.status_label.setText("Local test waves uploaded successfully.")
+        self.finalize_button.setEnabled(bool(self.run_id))
         if self.test_auto_finalize:
-            self.finalize_button.setEnabled(True)
-            self._finalize()
-        else:
-            self.finalize_button.setEnabled(True)
+            self._finalize(automatic=True)
 
     def _test_failed(self, error):
         self._cloud_seed_task = None
@@ -1713,10 +1720,13 @@ class MainWindow(QMainWindow):
             self.watcher.removePaths(current_paths)
         self.watcher.addPath(str(folder))
 
-    def _finalize(self):
-        if not self.run_id:
+    def _finalize(self, *, automatic=False):
+        if not self.run_id or self._finalize_task:
             return
-        if self._finalize_task:
+        # Automatic finalization is permitted only after the local test
+        # controller has completed every upload in its release plan.
+        if automatic and (not self.test_mode or self.test_controller is not None):
+            logger.warning("gui_auto_finalize_blocked run_id=%s", self.run_id)
             return
         rows = self.store.all(self.run_id)
         pending_count = sum(1 for row in rows if row["status"] != "uploaded")
@@ -1730,7 +1740,7 @@ class MainWindow(QMainWindow):
         if pending_count or failed_count:
             self._show_error(message + "\n\nResolve pending or failed uploads before finalizing.")
             return
-        if not self.headless_test and QMessageBox.question(self, "Confirm finalization", message, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+        if not (self.headless_test or automatic) and QMessageBox.question(self, "Confirm finalization", message, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
         self._accepting_files = False
         logger.info("gui_finalize_start run_id=%s", self.run_id)
@@ -1744,7 +1754,12 @@ class MainWindow(QMainWindow):
                     self.uploader.active_count
                 )
             )
-            QTimer.singleShot(500, self._finalize)
+            waiting_run_id = self.run_id
+            QTimer.singleShot(
+                500,
+                lambda: self._finalize(automatic=automatic)
+                if self.run_id == waiting_run_id else None,
+            )
             return
         if self.uploader:
             self.uploader.close(wait=False)
@@ -1759,6 +1774,7 @@ class MainWindow(QMainWindow):
             )
             return
         run_id = self.run_id
+        logger.info("gui_finalize_request_queued run_id=%s automatic=%s", run_id, automatic)
         self.finalize_button.setEnabled(False)
         self._finalize_task = _ApiTask(lambda: self.client.finalize(run_id))
         self._finalize_task.succeeded.connect(self._finalize_succeeded)
@@ -2109,6 +2125,25 @@ class MainWindow(QMainWindow):
             directory_ok = bool(folder and folder.is_dir() and os.access(str(folder), os.R_OK))
             add(directory_ok, "POD5 directory readable")
             if directory_ok:
+                if self.test_mode and self._test_source_directory is not None:
+                    add(
+                        folder.resolve() == Path(self._test_source_directory).resolve(),
+                        "Selected folder matches the local test fixture source",
+                    )
+                    try:
+                        fixture_count = sum(
+                            path.is_file() and path.suffix.lower() == ".pod5"
+                            for path in folder.rglob("*")
+                        )
+                        add(
+                            fixture_count == sum(DEFAULT_RELEASE_SIZES),
+                            "Local test fixture: exactly {0} POD5 files found ({1} required for five waves)".format(
+                                fixture_count, sum(DEFAULT_RELEASE_SIZES)
+                            ),
+                        )
+                    except OSError as exc:
+                        logger.warning("gui_test_fixture_scan_failed path=%s error=%s", folder, exc)
+                        add(False, "Local test fixture could not be scanned")
                 try:
                     add(shutil.disk_usage(str(folder)).free >= 5 * 1024**3, "At least 5 GB local free space")
                 except OSError:

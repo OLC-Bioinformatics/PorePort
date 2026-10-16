@@ -485,3 +485,116 @@ def test_closing_blocks_new_api_submissions(tmp_path):
     import pytest
     with pytest.raises(RuntimeError, match="closing"):
         window._start_api_task(ui._ApiTask(lambda: {}))
+
+
+def test_visible_local_waves_auto_finalize_without_dialog(tmp_path, monkeypatch):
+    _application = QApplication.instance() or QApplication([])
+    window = ui.MainWindow(
+        FakeClient(), QueueStore(tmp_path / "queue.sqlite3"),
+        test_mode=True, test_directory=tmp_path,
+    )
+    window.api_pool = CapturePool()
+    window.run_id = 42
+    window._accepting_files = True
+    window.test_controller = object()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("automatic local finalization must not prompt")
+
+    monkeypatch.setattr(ui.QMessageBox, "question", forbidden)
+    window._test_local_finished()
+    assert window.test_controller is None
+    assert not window._accepting_files
+    assert len(window.api_pool.tasks) == 1
+
+
+def test_visible_manual_finalize_still_requires_confirmation(tmp_path, monkeypatch):
+    _application = QApplication.instance() or QApplication([])
+    window = ui.MainWindow(
+        FakeClient(), QueueStore(tmp_path / "queue.sqlite3"),
+        test_mode=True, test_directory=tmp_path,
+    )
+    window.api_pool = CapturePool()
+    window.run_id = 42
+    window._accepting_files = True
+    monkeypatch.setattr(
+        ui.QMessageBox, "question",
+        lambda *args: ui.QMessageBox.StandardButton.No,
+    )
+    window._finalize()
+    assert window._accepting_files
+    assert not window.api_pool.tasks
+
+
+def test_local_test_preflight_rejects_extra_files_before_creating_run(tmp_path, monkeypatch):
+    _application = QApplication.instance() or QApplication([])
+    for number in range(24):
+        (tmp_path / ("fixture-{}.pod5".format(number))).touch()
+    window = ui.MainWindow(
+        FakeClient(), QueueStore(tmp_path / "queue.sqlite3"),
+        test_mode=True, test_directory=tmp_path,
+    )
+    window.api_pool = CapturePool()
+    monkeypatch.setattr(window, "_inspect_reference", lambda: True)
+    monkeypatch.setattr(window, "_sample_metadata_payload", lambda: {"samples": [{"barcode": 3}]})
+    monkeypatch.setattr(ui.shutil, "disk_usage", lambda path: type("Disk", (), {"free": 10 * 1024**3})())
+    errors = []
+    monkeypatch.setattr(window, "_show_error", errors.append)
+    window._create_run()
+    assert errors and "Preflight checks failed" in errors[0]
+    assert not window.api_pool.tasks
+    assert not window.client.create_run_calls
+    assert any("24" in window.preflight_list.item(i).text() and "23 required" in window.preflight_list.item(i).text() for i in range(window.preflight_list.count()))
+
+
+def test_local_test_controller_rechecks_fixture_count(tmp_path):
+    from nanopore_gui.test_mode import LocalWaveController
+    source = tmp_path / "source"
+    source.mkdir()
+    for number in range(24):
+        (source / ("fixture-{}.pod5".format(number))).touch()
+    failures = []
+    finished = []
+    controller = LocalWaveController(
+        source, tmp_path / "staging", None, 42,
+        failed=failures.append, finished=lambda: finished.append(True),
+    )
+    controller._run()
+    assert failures and "exactly 23" in str(failures[0])
+    assert not finished
+    assert not (tmp_path / "staging").exists()
+
+
+def test_auto_finalize_refuses_pending_uploads_without_prompt(tmp_path, monkeypatch):
+    _application = QApplication.instance() or QApplication([])
+    window = ui.MainWindow(
+        FakeClient(), QueueStore(tmp_path / "queue.sqlite3"),
+        test_mode=True, test_directory=tmp_path,
+    )
+    window.api_pool = CapturePool()
+    window.run_id = 42
+    window._accepting_files = True
+    window.store.add_pending(42, "sample.pod5", "sample.pod5", 12)
+    monkeypatch.setattr(ui.QMessageBox, "question", lambda *args: (_ for _ in ()).throw(
+        AssertionError("automatic finalization must not prompt")))
+    errors = []
+    monkeypatch.setattr(window, "_show_error", errors.append)
+    window._test_local_finished()
+    assert errors and "Resolve pending or failed uploads" in errors[0]
+    assert not window.api_pool.tasks
+    assert window._accepting_files
+
+
+def test_local_waves_no_finalize_leaves_run_open(tmp_path):
+    _application = QApplication.instance() or QApplication([])
+    window = ui.MainWindow(
+        FakeClient(), QueueStore(tmp_path / "queue.sqlite3"),
+        test_mode=True, test_directory=tmp_path, test_auto_finalize=False,
+    )
+    window.api_pool = CapturePool()
+    window.run_id = 42
+    window._accepting_files = True
+    window._test_local_finished()
+    assert window.finalize_button.isEnabled()
+    assert window._accepting_files
+    assert not window.api_pool.tasks

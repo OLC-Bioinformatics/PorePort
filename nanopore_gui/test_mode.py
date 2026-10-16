@@ -300,9 +300,12 @@ class LocalWaveController:
                     if path.is_file() and path.suffix.lower() == ".pod5"
                 )
             )
-            if not files:
+            expected = sum(DEFAULT_RELEASE_SIZES)
+            if len(files) != expected:
                 raise RuntimeError(
-                    "The --test-directory does not contain POD5 files."
+                    "The local test fixture must contain exactly {0} POD5 files "
+                    "for the five-wave plan (3,7,2,5,6); found {1}. "
+                    "No additional files will be staged.".format(expected, len(files))
                 )
             if self.staging.exists():
                 shutil.rmtree(self.staging)
