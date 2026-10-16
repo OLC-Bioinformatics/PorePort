@@ -61,6 +61,16 @@ def test_test_preset_prefills_contract_run_and_fixture_values(tmp_path):
         )
 
 
+def test_folder_watcher_registers_only_the_root(tmp_path):
+    _application, window = make_window(tmp_path)
+    nested = tmp_path / "nested" / "deeper"
+    nested.mkdir(parents=True)
+
+    window._watch_folder(tmp_path)
+
+    assert window.watcher.directories() == [str(tmp_path)]
+
+
 
 def test_pairing_code_entry_queues_exchange_task(monkeypatch, tmp_path):
     _application, window = make_window(tmp_path)

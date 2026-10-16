@@ -1708,11 +1708,10 @@ class MainWindow(QMainWindow):
             self.result_status.setText(f"Result unavailable: {error.detail}")
 
     def _watch_folder(self, folder: Path):
-        watched = [str(folder)] + [str(path) for path in folder.rglob("*") if path.is_dir()]
         current_paths = self.watcher.directories()
         if current_paths:
             self.watcher.removePaths(current_paths)
-        self.watcher.addPaths(watched)
+        self.watcher.addPath(str(folder))
 
     def _finalize(self):
         if not self.run_id:
