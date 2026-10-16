@@ -9,6 +9,11 @@ import os
 import sys
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot
+
 from PySide6.QtWidgets import QApplication, QLabel
 from PySide6.QtGui import QIcon
 from PySide6.QtCore import QUrl, QTimer
